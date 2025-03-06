@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="https://resources.finalsite.net/images/f_auto,q_auto/v1626100427/k12albemarleorg/uj41eppe27bunrvhwnep/PowerSchoolLogos_Vertical-01.png" type="image/x-icon">
+    <title>Login I Schoology</title>
+    <style>
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #6f3e01;
+            margin: 0;
+            padding: 0;
+            text-align: center;
+        }
+</style>
+</head>
+<body>
+    <h2>Shrek - What's the Password?</h2>
+    <input type="password" id="password" placeholder="Enter Password">
+    <button onclick="checkPassword()">Submit</button>
+
+    <script>
+        function checkPassword() {
+            var enteredPassword = document.getElementById('password').value;
+            var correctPassword = 'LEBRON';  // Replace this with the actual correct password
+
+            if (enteredPassword !== "LEBRON") {
+                alert('GET OFF MY SWAMP!');
+                window.close();  // Close the tab
+            } 
+            else {
+                alert('Welcome to the King Site');
+                {
+                    window.open("KingJK2013.github.io", "_self");
+                }
+            }
+        }
+    </script>
+</body>
+</html>
