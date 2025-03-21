@@ -1,97 +1,209 @@
-import type { HolyPage } from '../../App';
-import { getDestination } from '../../CompatLayout';
-import { RammerheadAPI, StrShuffler } from '../../RammerheadAPI';
-import { RH_API } from '../../consts';
-import Cookies from 'js-cookie';
-import { useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
-import { useLocation } from 'react-router-dom';
+import createBareServer from '@tomphttp/bare-server-node';
+import address from 'address';
+import chalk from 'chalk';
+import { expand } from 'dotenv-expand';
+import { config } from 'dotenv-flow';
+import express from 'express';
+import proxy from 'express-http-proxy';
+import { createServer } from 'node:http';
+import { join } from 'node:path';
+import createRammerhead from 'rammerhead/src/server/index.js';
+import { websitePath } from 'website';
 
-function patch(url: string) {
-	// url = _rhsEPrcb://bqhQko.tHR/
-	// remove slash
-	return url.replace(/(^.*?:\/)\//, '$1');
+// what a dotenv in a project like this serves: .env.local file containing developer port
+expand(config());
+
+const rh = createRammerhead();
+
+// used when forwarding the script
+const rammerheadScopes = [
+	'/rammerhead.js',
+	'/hammerhead.js',
+	'/transport-worker.js',
+	'/task.js',
+	'/iframe-task.js',
+	'/worker-hammerhead.js',
+	'/messaging',
+	'/sessionexists',
+	'/deletesession',
+	'/newsession',
+	'/editsession',
+	'/needpassword',
+	'/syncLocalStorage',
+	'/api/shuffleDict',
+];
+
+const rammerheadSession = /^\/[a-z0-9]{32}/;
+
+console.log(`${chalk.cyan('Starting the server...')}\n`);
+
+const app = express();
+
+app.use(
+	'/api/db',
+	proxy(`https://holyubofficial.net/`, {
+		proxyReqPathResolver: (req) => `/db/${req.url}`,
+	})
+);
+
+app.use(
+	'/cdn',
+	proxy(`https://holyubofficial.net/`, {
+		proxyReqPathResolver: (req) => `/cdn/${req.url}`,
+	})
+);
+
+app.use(express.static(websitePath, { fallthrough: false }));
+
+app.use((error, req, res, next) => {
+	if (error.statusCode === 404)
+		return res.sendFile(join(websitePath, '404.html'));
+
+	next();
+});
+
+const server = createServer();
+
+const bare = createBareServer('/api/bare/');
+
+server.on('request', (req, res) => {
+	if (bare.shouldRoute(req)) {
+		bare.routeRequest(req, res);
+	} else if (shouldRouteRh(req)) {
+		routeRhRequest(req, res);
+	} else {
+		app(req, res);
+	}
+});
+
+server.on('upgrade', (req, socket, head) => {
+	if (bare.shouldRoute(req)) {
+		bare.routeUpgrade(req, socket, head);
+	} else if (shouldRouteRh(req)) {
+		routeRhUpgrade(req, socket, head);
+	} else {
+		socket.end();
+	}
+});
+
+const tryListen = (port) =>
+	new Promise((resolve, reject) => {
+		const cleanup = () => {
+			server.off('error', errorListener);
+			server.off('listening', listener);
+		};
+
+		const errorListener = (err) => {
+			cleanup();
+			reject(err);
+		};
+
+		const listener = () => {
+			cleanup();
+			resolve();
+		};
+
+		server.on('error', errorListener);
+		server.on('listening', listener);
+
+		server.listen({
+			port,
+		});
+	});
+
+const ports = [80, 8080, 3000];
+
+const envPort = Number(process.env.PORT);
+if (!isNaN(envPort)) ports.unshift(envPort);
+
+while (true) {
+	const port = ports.shift() || randomPort();
+
+	try {
+		await tryListen(port);
+
+		// clear console:
+		process.stdout.write(
+			process.platform === 'win32' ? '\x1B[2J\x1B[0f' : '\x1B[2J\x1B[3J\x1B[H'
+		);
+
+		console.log(
+			`You can now view ${chalk.bold('website-aio')} in the browser.`
+		);
+
+		console.log('');
+
+		const addr = server.address();
+
+		console.log(
+			`  ${chalk.bold('Local:')}            http://${
+				addr.family === 'IPv6' ? `[${addr.address}]` : addr.address
+			}${addr.port === 80 ? '' : ':' + chalk.bold(addr.port)}`
+		);
+
+		console.log(
+			`  ${chalk.bold('Local:')}            http://localhost${
+				addr.port === 80 ? '' : ':' + chalk.bold(addr.port)
+			}`
+		);
+
+		try {
+			console.log(
+				`  ${chalk.bold('On Your Network:')}  http://${address.ip()}${
+					addr.port === 80 ? '' : ':' + chalk.bold(addr.port)
+				}`
+			);
+		} catch (err) {
+			// can't find LAN interface
+		}
+
+		if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
+			console.log(
+				`  ${chalk.bold('Replit:')}           https://${
+					process.env.REPL_SLUG
+				}.${process.env.REPL_OWNER}.repl.co`
+			);
+		}
+
+		console.log('');
+
+		break;
+	} catch (err) {
+		console.error(chalk.yellow(chalk.bold(`Couldn't bind to port ${port}.`)));
+	}
 }
 
-const Rammerhead: HolyPage = ({ compatLayout }) => {
-	const { t } = useTranslation('compat');
-	const location = useLocation();
+function randomPort() {
+	return ~~(Math.random() * (65536 - 1024 - 1)) + 1024;
+}
 
-	useEffect(() => {
-		(async function () {
-			let errorCause: string | undefined;
+/**
+ *
+ * @param {import('node:http').IncomingRequest} req
+ */
+function shouldRouteRh(req) {
+	const url = new URL(req.url, 'http://0.0.0.0');
+	return (
+		rammerheadScopes.includes(url.pathname) ||
+		rammerheadSession.test(url.pathname)
+	);
+}
 
-			try {
-				const api = new RammerheadAPI(RH_API);
+/**
+ *
+ * @param {import('node:http').IncomingRequest} req
+ * @param {import('node:http').ServerResponse} res
+ */
+function routeRhRequest(req, res) {
+	rh.emit('request', req, res);
+}
 
-				// according to our NGINX config
-				if (import.meta.env.NODE_ENV === 'production') {
-					Cookies.set('auth_proxy', '1', {
-						domain: `.${globalThis.location.host}`,
-						expires: 1000 * 60 * 60 * 24 * 7, // 1 week
-						secure: globalThis.location.protocol === 'https:',
-						sameSite: 'lax',
-					});
-
-					Cookies.set('origin_proxy', globalThis.location.origin, {
-						expires: 1000 * 60 * 60 * 24 * 7, // 1 week
-						secure: globalThis.location.protocol === 'https:',
-						sameSite: 'lax',
-					});
-				}
-
-				errorCause = t('error.unreachable', { what: 'Rammerhead' });
-				await fetch(RH_API);
-				errorCause = undefined;
-
-				errorCause = t('error.rammerheadSavedSession');
-
-				if (
-					localStorage.rammerhead_session &&
-					(await api.sessionExists(localStorage.rammerhead_session))
-				) {
-					const test = await fetch(
-						new URL(localStorage.rammerhead_session, RH_API),
-					);
-
-					await api.deleteSession(localStorage.rammerhead_session);
-
-					// 404 = good, 403 = Sessions must come from the same IP
-					if (test.status === 403) delete localStorage.rammerhead_session;
-				} else {
-					delete localStorage.rammerhead_session;
-				}
-
-				errorCause = t('error.rammerheadNewSession');
-				const session =
-					localStorage.rammerhead_session || (await api.newSession());
-				errorCause = undefined;
-
-				errorCause = undefined;
-
-				errorCause = t('error.rammerheadEditSession');
-				await api.editSession(session, false, true);
-				errorCause = undefined;
-
-				errorCause = t('error.rammerheadDict');
-				const dict = await api.shuffleDict(session);
-				errorCause = undefined;
-
-				const shuffler = new StrShuffler(dict);
-
-				globalThis.location.replace(
-					new URL(
-						`${session}/${patch(shuffler.shuffle(getDestination(location)))}`,
-						RH_API,
-					),
-				);
-			} catch (err) {
-				compatLayout.current!.report(err, errorCause, 'Rammerhead');
-			}
-		})();
-	}, [compatLayout, location, t]);
-
-	return <main>{t('loading', { what: 'Rammerhead' })}</main>;
-};
-
-export default Rammerhead;
+/**
+ *
+ * @param {import('node:http').IncomingRequest} req
+ * @param {import('node:stream').Duplex} socket
+ * @param {Buffer} head
+ */
+function routeRhUpgrade(req, socket, head) {
+	rh.emit('upgrade', req, socket, head);
+}
