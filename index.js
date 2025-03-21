@@ -1,45 +1,97 @@
-import createBareServer from '@tomphttp/bare-server-node';
-import http from 'http';
-import nodeStatic from 'node-static';
-const bare = new createBareServer('/bare/',{
-	logErrors: true
-});
-const serve  =new nodeStatic.Server('site/');
-const fake = new nodeStatic.Server('fake/');
-const server = http.createServer();
-server.on ('request', (req, resp) => {
-	const agent = req.headers['user-agent'];
-	const isCros = /CrOS/g.test(agent);
+import type { HolyPage } from '../../App';
+import { getDestination } from '../../CompatLayout';
+import { RammerheadAPI, StrShuffler } from '../../RammerheadAPI';
+import { RH_API } from '../../consts';
+import Cookies from 'js-cookie';
+import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 
-	const cookies = req.headers['cookie';]
-	const unlocked = /unlock=true/g.test(cookies);
+function patch(url: string) {
+	// url = _rhsEPrcb://bqhQko.tHR/
+	// remove slash
+	return url.replace(/(^.*?:\/)\//, '$1');
+}
 
-	const keyCorrect = req.url.endsWith('?unlock');
-	if (keyCorrect) {
-		resp.setHeader('set-cookie', 'unlock-true');
-	}
-	if (bare.shouldRoute(req)) {
-		console.log("bare");
-		bare.routeRequest(req, resp);
-	} 
-	   else if (keyCorrect || isCros || unlocked ||
-	req.headers['host'].startsWith('localhost')) { 
-		   console.log(req.headers['host']);
-		   serve.serve(req, resp);
-	}
-		else
-		   fake.serve(req, resp)
+const Rammerhead: HolyPage = ({ compatLayout }) => {
+	const { t } = useTranslation('compat');
+	const location = useLocation();
 
-        resp.statusCode = 404;
-        console. log(resp.statusCode);
-    });
-    server.on('upgrade,' (req, socket, head) => {
-        if (bare.shouldRoute(req))
-            bare.routUpgrade(req, socket, head);
-        else
-            socket.end()
-    });
-    const port = process.env.PORT || 3000;
-    console.log(`Running on port ${port}`)
-    server.listen(port);
-		   
+	useEffect(() => {
+		(async function () {
+			let errorCause: string | undefined;
+
+			try {
+				const api = new RammerheadAPI(RH_API);
+
+				// according to our NGINX config
+				if (import.meta.env.NODE_ENV === 'production') {
+					Cookies.set('auth_proxy', '1', {
+						domain: `.${globalThis.location.host}`,
+						expires: 1000 * 60 * 60 * 24 * 7, // 1 week
+						secure: globalThis.location.protocol === 'https:',
+						sameSite: 'lax',
+					});
+
+					Cookies.set('origin_proxy', globalThis.location.origin, {
+						expires: 1000 * 60 * 60 * 24 * 7, // 1 week
+						secure: globalThis.location.protocol === 'https:',
+						sameSite: 'lax',
+					});
+				}
+
+				errorCause = t('error.unreachable', { what: 'Rammerhead' });
+				await fetch(RH_API);
+				errorCause = undefined;
+
+				errorCause = t('error.rammerheadSavedSession');
+
+				if (
+					localStorage.rammerhead_session &&
+					(await api.sessionExists(localStorage.rammerhead_session))
+				) {
+					const test = await fetch(
+						new URL(localStorage.rammerhead_session, RH_API),
+					);
+
+					await api.deleteSession(localStorage.rammerhead_session);
+
+					// 404 = good, 403 = Sessions must come from the same IP
+					if (test.status === 403) delete localStorage.rammerhead_session;
+				} else {
+					delete localStorage.rammerhead_session;
+				}
+
+				errorCause = t('error.rammerheadNewSession');
+				const session =
+					localStorage.rammerhead_session || (await api.newSession());
+				errorCause = undefined;
+
+				errorCause = undefined;
+
+				errorCause = t('error.rammerheadEditSession');
+				await api.editSession(session, false, true);
+				errorCause = undefined;
+
+				errorCause = t('error.rammerheadDict');
+				const dict = await api.shuffleDict(session);
+				errorCause = undefined;
+
+				const shuffler = new StrShuffler(dict);
+
+				globalThis.location.replace(
+					new URL(
+						`${session}/${patch(shuffler.shuffle(getDestination(location)))}`,
+						RH_API,
+					),
+				);
+			} catch (err) {
+				compatLayout.current!.report(err, errorCause, 'Rammerhead');
+			}
+		})();
+	}, [compatLayout, location, t]);
+
+	return <main>{t('loading', { what: 'Rammerhead' })}</main>;
+};
+
+export default Rammerhead;
